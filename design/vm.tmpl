@@ -1,0 +1,311 @@
+            +---------------------------+
+            | CSCC69                    |
+            | PROJECT 3: VIRTUAL MEMORY	|
+            | DESIGN DOCUMENT           |
+            +---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Jiayu Lu <jiay.lu@mail.utoronto.ca>
+Dezhi Ren <dezhi.ren@mail.utoronto.ca>
+Mengqi Zhao <hart.zhao@mail.utoronto.ca>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+            PAGE TABLE MANAGEMENT
+            =====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+enum spte_status 
+{
+  MMAP,
+  SWAP
+};
+
+struct spt_elem{
+  
+  uint8_t *upage;                       // the upage this page is decripting and also works as the unique id of the page
+
+  struct file *fileptr;                 // the pointer to the mapped file of the page
+
+  off_t offset;                         // the offset of the head of the mapped file
+
+  uint32_t read_bytes;                  // to determine the bytes to read
+
+  uint32_t zero_bytes;                  // to determine the bytes to zero
+
+  bool writable;                        // to determine if the file is writable to the file system
+
+  int spte_status;                      // the type of the page
+
+  size_t index_swap;                    // index for swap
+
+  bool is_loaded;                       // whether the page is loaded into the memory
+  
+  /* a list elem */
+  struct list_elem elem;
+
+};
+
+struct thread{
+
+    struct list sup_page_table;         // to store the supplemental page table for the thread
+    
+}
+
+---- ALGORITHMS ----
+>> A2: In a few paragraphs, describe your code for accessing the data
+>> stored in the SPT about a given page.
+
+Our code checks that if the virtual address is mapped in the page directory of the process. If it is 
+mapped, we return the frame. Otherwise, we further check that if the page is mapped to one of the 
+supplemental page entries. The bool is_loaded struct member indicates whether the page has been loaded into
+memory yet. If it is mapped and loaded, then we return the frame which corresponding to the supplemental
+page table
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+Our code does not access the accessed and dirty bits through the kernel virtual adresses, so
+this situation never happens.
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+We use a lock to ensure that only one thread can create a new frame and push this frame
+to the list of frames at a time.
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+In this project, not necessarily all pages of each process are in memory. The pages can
+also be unloaded (we applied lazy load) or be swapped out of the memory. So we design the
+supplemental page table which extends the original page directory to store the information
+of the page. For pages in memory, we can look up the original page directory to get the frame.
+For pages in disk, we can look up supplemental page directory to get the frame.
+
+               PAGING TO AND FROM DISK
+               =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+static struct lock frame_lock;    // lock to achieve synchronization
+
+static struct list frame_table;   // list to store frames
+
+struct frame_elem {
+
+  struct thread *owner;           // the thread that owns this frame
+
+  void *page;                     // the page this frame is pointing to
+
+  struct list_elem elem;          // the list element
+
+  bool pinned;                    // whether the frame can be swapped
+};
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+
+We use the second chance algorithm to determine which frame to evict.
+We traverse the list of frames from begining to the end and perform the following action
+on the frame which is not pinned (evictable). If the accessed bit of
+the frame is zero, then we evict this frame. Otherwise, we set the accessed bit of
+the frame to zero. If we reach the end of the list, we go back to the begining of the list
+and loop again until we find a frame to evict.
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+
+By accessing the frame struct, we can get the owner process Q and the corresponding user
+virtual address of the frame. Then we use pagedir_clear_page function to clear the page from Q and
+change the owner of the frame.
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+We first check whether address exceed the stack limit. Then we check whether the fault
+address is 32 bytes lower than esp. This is because when cpu executing push/pusha, it 
+will push in 4/32 bytes. The stack will only be extended when none of the two 
+rules is disobeyed.
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+
+In our design, the frame and swap table are shared between processes and each process 
+has its own supplemental page table. For frame and swap table, they have frame_lock and
+swap_lock to ensure that only one process can access to the tables at a time. For supplemental
+page table of each process, there is also a lock to ensure that only one can access the table.
+Since our design does not require any process to acquire two locks to perform a action, the deadlock 
+never happens.
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+A lock is needed to acquired before accessing the supplemental page table, so
+Q cannot access or modify the page when it is in eviction process. 
+
+When p is evicting Q's frame, P gets the lock. And Q can only fault the page back in only
+when p finishes. 
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+We have a struct member bool pinned to indicate that if the frame is evictable.
+Before we finish read frames from the file system or swap, the pinned is set to true, so that
+our eviction algorithm will never pick this frame to evict.
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+
+During the system calls, the paged-out pages will be loaded back into memory and marked it as not evictable.
+So the pages will not be swapped out of the memory during the system calls.
+
+For invalid virtual address, we have a function to check the validity. The process will exit with -1 if
+it attempts to access invalid virtual address.
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+
+At the begining, we thought about we can use only one lock to ensure the synchronization of the VM and
+it would be extremely esay to implement. However, we later realized the drawbacks of this design. It limites the
+parallelism of the operating system. Our final decision is to give frame table, swap table and supplemental page tables
+of each process a lock. While it increases the complexity of our design, it also allows for high parallelism.
+
+             MEMORY MAPPED FILES
+             ===================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+In struct spt_elem, the below five struct memebers are for memory mapped files,
+other members in spt_elem are not shown.
+
+struct spt_elem{
+  
+  struct file *fileptr;           // the pointer to the mapped file of the page
+
+  off_t offset;                   // the offset of the head of the mapped file
+
+  uint32_t read_bytes;            // to determine the bytes to read
+
+  uint32_t zero_bytes;            // to determine the bytes to zero
+
+  int mapid;                      // the mapid to be returned by mmap and to be passed in to munmap
+
+};
+
+static int mapid;                 // the global variable used to assign unique mapids by incrementing it
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+When the system call mmap is invoked, we first error check if both
+arguments are valid. Then, we lazily load the file, malloc and insert
+a new spt_elem which contains the fileptr, mapid, ofs, read_bytes and 
+zero_bytes into the sup_page_table list. After this, we zero the bytes
+in the last page if needed and return the mapid.
+
+When the system call munmap is invoked, we get the corresponding spt_elem
+by the passed in mapid. Then, we write back the dirty pages and delete the
+spt_elem from the sup_page_table list.
+
+The eviction process is that we evict the least recent used page through LRU/second
+chance algorithm. We first use LRU to locate the physical. Then generate a swap slot
+to first munmap it and then swap it out.
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+In the mmap system call, we implemented error checking to get rid of some
+easy-to-identify illegal fds and virtual addresses. After that, since we 
+are lazily loading the file, there should never be a mapping overlap.
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+The first version of our implementation creates a new data structure for mapping.
+But as soon as we found that they share some similarity on files, we changed our
+design sturcture to streamline our code. The shared data structure makes our code
+less redundant. We also think that using shared sturcture make the design easier to
+understand.
+
+               SURVEY QUESTIONS
+               ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?

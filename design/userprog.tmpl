@@ -1,0 +1,282 @@
+             +--------------------------+
+             | CSCC69                   |
+             | PROJECT 2: USER PROGRAMS	|
+             | DESIGN DOCUMENT          |
+             +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Jiayu Lu <Jiay.lu@mail.utoronto.ca>
+Dezhi Ren <dezhi.ren@mail.utoronto.ca>
+Mengqi Zhao <hart.zhao@mail.utoronto.ca>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+               ARGUMENT PASSING
+               ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+There is no struct or struct member being added or changed.
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+Our Way to implement argument parsing:
+Inside process_execute, we make two copies of the file_name (copy1, copy2) so that
+we can use strtok_r on copy1 and copy2 and file_name will not be modified.
+We retrieve the first token (the command to be executed) from the copy1 and use it
+as the name of the new thread. we pass copy2 as the AUX argument in thread_create.
+Inside start_process, make one copy of file_name to retrieve the command and pass the command into load
+function. we use memcpy to push the arguments into the stack, add alignment, push the address of each arguments,
+push the address of argv[0], push number of arguments and finally push the return address.
+
+How do you arrange for the elements of argv[] to be in the right order?
+We traverse file_name backwards. For example, the first token we get is the last argument and this last argument
+is pushed into the stack before any other tokens. In this way, we can keep decrease esp and
+push each element in argv[] in the correct order.
+
+How do you avoid overflowing the stack page?
+We limit the number of arguments to prevent any potential overflow. Every time we use the pointer esp,
+we use a helper function to check this pointer's validity to avoid overflow.
+
+
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+The difference between strtok_r and strtok is that the user can provide a pointer
+to store the rest of string after retrieving a token from the string. This is what we
+need to retrieve all the arguments. Moreover, strtok_r is thread safe, but strtok is not.
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+1) The shell can separate the arguments and check if there exists such command and if
+    the arguments are all valid before passing into the kernel. So the kernel does not need
+    to check such kind of errors.
+2) In Pintos, it can only do a single command at a time, because the Pintos only read the first token as
+    the command to be executed and the rest are the arguments. However, in Unix, we can do command like
+    makedir myDir; cd myDir or pipe.
+
+
+                 SYSTEM CALLS
+                 ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+In struct thread:
+
+1)    int return_value;                   /* return value for the thread */
+
+2)    struct list files;                  /* store the files of this thread */
+
+3)    int fd_accum;                       /* keep track of unique file descriptor */
+
+4)    struct file *executable;            /* the file in use as executable */
+
+#ifdef USERPROG
+
+  5)    uint32_t *pagedir;                  /* Page directory. */   
+
+  6)    struct semaphore sema;              /* semaphore to let parent thread waiting for child threads to finish */
+
+  7)    int loaded;                         /* whether the child thread executes succesfully */
+
+  8)    struct thread* parent;              /* the thread struct to store the parent of the thread */
+
+  9)    struct list childs;                 /* the list to store the children of the thread */
+
+  10)   struct child * thread_child;        /* the child struct to store the childer of the thread */
+
+#endif
+
+A new struct child:
+
+1)    int return_value;                   /* the return status of the child thread */
+
+2)    tid_t tid;                          /* store the tid of the child thread */
+
+3)    bool current_running_status;                /* whether the child thread is running */   
+
+4)    struct semaphore sema;              /* semaphore to let parent wait */
+
+5)    struct list_elem child_elem;        /* used to be stored in childs list */    
+
+A new struct thread_file:
+
+1)    int fd;                              /* file descriptor */
+
+2)    struct file* file;                   /* the file corresponding to this thread_file */
+
+3)    struct list_elem file_elem;          /* the file as a list_elem */
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+
+When the process open a file, the kernel assign a file descriptor to 
+the file and return it to the process. Each file descriptor is actually
+an unsigned integer that points to the opened file in the list of open files
+of a process. 
+It just within a single process.
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+Write
+1. First, we check if the pointers that contain file descriptor, buffer 
+and size are all valid. Then we check if the buffer is NULL.
+2. Next, we get theses three variable from the stack.
+3. Then, we check the value of file descriptor
+  If the file does not exist, just return zero.
+  If it is one, then write the output to the console.
+  Otherwise, we get pointer of the opened file from the opened file 
+  list of the thread and atomicly call file write to write data into the file.
+
+Read
+1. First, we check if the pointers that contain file descriptor, buffer 
+and size are all valid. Then we check if the buffer is NULL.
+2. Next, we get theses three variable from the stack.
+(Step 1 and 2 are the same as write)
+3. Then, we check the value of file descriptor
+  If the fd is a standard input, then call input_getc
+  If the fd is a file descriptor, then we get pointer of the opened file from the 
+  opened file list of the thread and atomicly call file read to read data from the file.
+
+
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+
+The greatest possible number of inspections is 1024 and the least is 0.
+If a system call only copies 2 bytes of data, there wiil be zero inspections.
+This is because we inspect a word length (4 bytes) each time. So if we inspect
+2 bytes each time, we can improve the room for 2 bytes each time.
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+1. First, get the stack pointer and check if the address is valid
+2. Next, call process_wait and store its return value
+3. In process_wait,
+  We first get the list of children of the current running thread.
+  Then we traverse through the list of children of the thread to find 
+  the child thread corresponding to the child_tid
+    If the child has already been successfully called for the given TID, just return -1.
+    If the child thread has not been waited yet, then do sema_dowm to wait
+    for the child to complete
+4. Finally, when each child has completed, it closed all the files it opened, saves its
+return value and wake up the parent.
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+
+For each system call using stack pointer, we check the validity of the 
+stack pointer and whether the memory is allocated for buffer. If the error
+is caught, we call thread_exit_with_status(-1) to indicate that the syscall 
+is failed. Then all the resources will be released in thread_exit().
+
+For example, in sys_write we first check the validity of file descriptor, buffer
+and size. Then if the error is catched, we just exit with -1.
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+The exec system call calls process_execute. The process_execute copies the filename
+and create a thread to execute the command. Then it sema_dowm the the semaphore
+to watch for the process. We use an int 'loaded' to check whether the child thread 
+executes succesfully
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+In process_wait, we traverse all the child threads of the current thread to 
+ensure that the parent is locked before all the child is completeed.  
+When a child is executed, it will be removed from parent's child list. So, if
+the wait is called after the child exits, the parent will not find it in the child
+list. We free all the resources when the process exits 
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+Because it is efficient to move all the argument from user memory 
+into kernel memory by copying the argument in string format.
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+The file descriptor is just an integer and pointer to the file. So it
+increase the look up time.
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+Not changed
+
+               SURVEY QUESTIONS
+               ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
